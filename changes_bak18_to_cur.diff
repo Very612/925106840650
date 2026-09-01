@@ -1,0 +1,67 @@
+--- UsrAI.cpp.bak18	2026-08-30 23:15:16.901355600 +0800
++++ UsrAI.cpp	2026-08-30 23:15:48.844934000 +0800
+@@ -707,12 +707,28 @@
+                     return;
+                 }
+         } else if (siegeKnown) {
+-            // 厂区已探明但未清场：祭司跟随军队，但保持在厂区外（军队重心在厂区18格外时祭司才跟随）
++            // 厂区已探明但未清场：祭司站在我方战线"背敌侧"（军队重心再往回 9 格），
++            // 不贴火线、不被敌追兵缠上；仅高价值目标(投石车)在安全距离内才前出转化(见上方 C+ 段)。
+             double armyDR = 0, armyUR = 0;
+             if (armyCenterPos(info, armyDR, armyUR)) {
+-                if (calDistance(armyDR, armyUR, siegeDR, siegeUR) <= 18 * BLOCK)
+-                    issueMove(PRIEST_MOVE_FOLLOW, armyDR, armyUR, 4 * BLOCK);
+-                else
++                if (calDistance(armyDR, armyUR, siegeDR, siegeUR) <= 18 * BLOCK) {
++                    // 锚点 = 军队重心沿"背敌方向"再延伸 9 格；背敌方向优先取最近敌，无近敌则取厂区反方向
++                    double ax = armyDR, ay = armyUR;
++                    double ex = 0, ey = 0; double ndAnchor = 1e18;
++                    int ne = nearestEnemyUnitSN(info, armyDR, armyUR, ndAnchor);
++                    if (ne >= 0 && enemyDetailPos(info, ne, ex, ey)) {
++                        double rx = armyDR - ex, ry = armyUR - ey;   // 由敌指向军队 = 背敌方向
++                        double rl = std::sqrt(rx * rx + ry * ry);
++                        if (rl > 1) { ax = armyDR + rx / rl * 9 * BLOCK; ay = armyUR + ry / rl * 9 * BLOCK; }
++                    } else {
++                        double vx = armyDR - siegeDR, vy = armyUR - siegeUR; // 厂区→军队方向(我方推进方向)
++                        double vl = std::sqrt(vx * vx + vy * vy);
++                        if (vl > 1) { ax = armyDR + vx / vl * 9 * BLOCK; ay = armyUR + vy / vl * 9 * BLOCK; }
++                    }
++                    ax = fmax(BLOCK, fmin(ax, (MAP_L - 1) * BLOCK));
++                    ay = fmax(BLOCK, fmin(ay, (MAP_U - 1) * BLOCK));
++                    issueMove(PRIEST_MOVE_FOLLOW, ax, ay, 3 * BLOCK);
++                } else
+                     retreatToSafe();   // 军队还在推进，祭司留家等清场
+             } else {
+                 retreatToSafe();
+@@ -1476,7 +1492,8 @@
+         const int towerLimit = (info.civilizationStage >= CIVILIZATION_BRONZEAGE)
+             ? std::max(3, countBuildingBuilt(info, BUILDING_ARROWTOWER))
+             : (g_underAttack ? 5 : 4);
+-        if (!towerUpgradeStarted && g_towerPhase == 3 && info.Stone >= 150) {
++        // 第三波(21000帧)之后彻底停建箭塔（用户方案：总攻阶段造塔无意义，且此前实测第三波后仍建塔属浪费）
++        if (info.GameFrame < WAVE3_FRAME && !towerUpgradeStarted && g_towerPhase == 3 && info.Stone >= 150) {
+             int built = countBuildingBuilt(info, BUILDING_ARROWTOWER);   // 已建成
+             int total = countBuilding(info, BUILDING_ARROWTOWER);        // 含在建/烂尾
+ 
+@@ -2131,7 +2148,20 @@
+                 // 远程兵无敌人时向厂区推进；近战兵未清场时推进到厂区外 18 格集结（不深入集火圈）
+                 if (hasTarget) {
+                     if (ranged) {
+-                        if (calDistance(a.DR, a.UR, targetDR, targetUR) > 6 * BLOCK) {
++                        // 远程兵 standoff：与最近敌保持 12 格、不冲进白刃线（近战前排吸收仇恨），
++                        // 无近敌时才推进到厂区外 12 格——始终在己方近战之后，避免被敌追兵缠上/误伤。
++                        double ex = 0, ey = 0; double ndR = 1e18;
++                        int neR = nearestEnemySN(info, a.DR, a.UR, ndR);
++                        if (neR >= 0 && enemyDetailPos(info, neR, ex, ey) && ndR < 14 * BLOCK) {
++                            double rx = a.DR - ex, ry = a.UR - ey;   // 背敌方向
++                            double rl = std::sqrt(rx * rx + ry * ry);
++                            double sx = a.DR, sy = a.UR;
++                            if (rl > 1) { sx = a.DR + rx / rl * 12 * BLOCK; sy = a.UR + ry / rl * 12 * BLOCK; }
++                            sx = fmax(BLOCK, fmin(sx, (MAP_L - 1) * BLOCK));
++                            sy = fmax(BLOCK, fmin(sy, (MAP_U - 1) * BLOCK));
++                            auto sp = scatterPoint(a.SN, sx, sy);
++                            moveArmyTo(a.SN, sp.first, sp.second);
++                        } else if (calDistance(a.DR, a.UR, targetDR, targetUR) > 12 * BLOCK) {
+                             // 散开站位：目标点按 SN 偏移，防全部挤在厂区一点被投石车群伤
+                             auto sp = scatterPoint(a.SN, targetDR, targetUR);
+                             moveArmyTo(a.SN, sp.first, sp.second);

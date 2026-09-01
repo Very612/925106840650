@@ -1,0 +1,208 @@
+--- UsrAI.cpp.bak22	2026-08-31 00:33:51.892472400 +0800
++++ UsrAI.cpp	2026-08-31 00:36:09.869541700 +0800
+@@ -563,44 +563,52 @@
+             return;
+         }
+ 
+-        // C+ 转化：主动找全局最高价值兵种（投石车绝对优先，其次价值分最高），防守/反攻都主动转化。
+-        // 逼近时绕开路径上更近的威胁敌人，避免直线穿过被打死；低血/箭塔威胁兜底仍在前方拦截。
++        // C+ 转化：价值优先（第三波投石车 1000 > armyValueScore），但**只挑安全可达的目标**——
++        // 目标 6 格内敌人 >=3 说明深陷敌堆，去转化它就得走进敌堆送死 → 跳过；
++        // 过远(>34格)的目标同样跳过（长途穿越 = 送死）。
++        // 选中后祭司只逼近到自身转化射程边缘(11格)就停住持续转化，绝不继续靠近。
++        // 注：旧的"垂直绕行"已删除（见下方），安全性改由本段目标选择把关。
+         int target = -1;
+         double tdr = 0, tur = 0;
+         int attacker = findAttackerSN(info, priestSN);
+         if (attacker >= 0 && enemyDetailPos(info, attacker, tdr, tur)) {
+             target = attacker;   // 正在攻击祭司者优先（自救）
+         } else {
+-            double bestValue = -1, bestDist = 1e18;
+-            int bestSN = -1;
+-            // 投石车绝对优先，取最近一台。
+-            // 规则3：仅限"第三波推进来的"投石车（isWave3StoneThrower 位置分区判定），
+-            // 敌方大本营所属的守家投石车不转化（wave3Units 是 enemyai.cpp 的 static，
+-            // UsrAI 访问不到，且 tagArmy 无波次字段，只能按"是否离开大本营"近似）。
++            // 某点 6 格内的敌人数（判断候选目标是否深陷敌堆）
++            auto guardCount = [&](double dr, double ur) -> int {
++                int c = 0;
++                for (const auto& e : info.enemy_armies)
++                    if (e.Blood > 0 && calDistance(e.DR, e.UR, dr, ur) <= 6 * BLOCK) c++;
++                return c;
++            };
++            const int GUARD_LIMIT = 3;             // 目标 6 格内敌人 >=3 → 视为深陷敌堆
++            const double REACH_LIMIT = 34 * BLOCK; // 过远不去（避免长途穿越敌区）
++            // 严格档：价值优先，且目标必须安全可达
++            double bv = -1, bd = 1e18; int bestSN = -1;
+             for (const auto& a : info.enemy_armies) {
+-                if (a.Blood <= 0 || a.Sort != AT_STONE_THROWER) continue;
+-                if (!isWave3StoneThrower(info, a)) continue;   // 守家投石车 → 不转化
++                if (a.Blood <= 0) continue;
+                 double d = calDistance(priest->DR, priest->UR, a.DR, a.UR);
+-                if (d < bestDist) { bestDist = d; bestSN = a.SN; bestValue = 1000; }
++                if (d > REACH_LIMIT) continue;
++                if (guardCount(a.DR, a.UR) >= GUARD_LIMIT) continue;
++                // 第三波推进来的投石车价值 1000；守家投石车按普通价值处理（避免长途去敌基地）
++                int v = (a.Sort == AT_STONE_THROWER && isWave3StoneThrower(info, a))
++                        ? 1000 : armyValueScore(a.Sort);
++                if (v > bv || (v == bv && d < bd)) { bv = v; bd = d; bestSN = a.SN; }
+             }
+-            // 其次价值分最高者
++            // 兜底档：都被敌堆包围或过远 → 退而求其次，只转化**最近**的敌人（绝不冒险深入）
+             if (bestSN < 0) {
++                bd = 1e18;
+                 for (const auto& a : info.enemy_armies) {
+                     if (a.Blood <= 0) continue;
+-                    int v = armyValueScore(a.Sort);
+                     double d = calDistance(priest->DR, priest->UR, a.DR, a.UR);
+-                    if (v > bestValue || (v == bestValue && d < bestDist)) {
+-                        bestValue = v; bestDist = d; bestSN = a.SN;
+-                    }
+-                }
+-            }
+-            // 最后敌方农民（价值低，仅在无军队目标时）
+-            if (bestSN < 0) {
+-                for (const auto& f : info.enemy_farmers) {
+-                    if (f.Blood <= 0) continue;
+-                    double d = calDistance(priest->DR, priest->UR, f.DR, f.UR);
+-                    if (d < bestDist) { bestDist = d; bestSN = f.SN; }
++                    if (d < bd) { bd = d; bestSN = a.SN; }
+                 }
++                if (bestSN < 0)
++                    for (const auto& f : info.enemy_farmers) {
++                        if (f.Blood <= 0) continue;
++                        double d = calDistance(priest->DR, priest->UR, f.DR, f.UR);
++                        if (d < bd) { bd = d; bestSN = f.SN; }
++                    }
+             }
+             if (bestSN >= 0) {
+                 target = bestSN;
+@@ -616,35 +624,27 @@
+                 // 射程内直接转化（只下发一次，避免不断重置转换读条）
+                 HumanAction(priestSN, target);
+                 g_priestMoveMode = PRIEST_MOVE_NONE;
++                // 验证用：每次锁定"新的"转化对象时打一条日志，确认总攻期祭司确实在转化
++                static int s_lastConvertLogged = -1;
++                if (target != s_lastConvertLogged) {
++                    s_lastConvertLogged = target;
++                    qInfo() << "[STAT] priest_convert_start frame" << info.GameFrame
++                            << "target_sn" << target;
++                }
+                 return;
+             }
+-            // 射程外：先检查路径上是否有更近的威胁敌人（非目标），有则垂直绕行，无则直线逼近到 10 格
+-            double threatDist = 1e18, ex = 0, ey = 0;
+-            for (const auto& a : info.enemy_armies) {
+-                if (a.Blood <= 0 || a.SN == target) continue;
+-                double td = calDistance(priest->DR, priest->UR, a.DR, a.UR);
+-                if (td < threatDist) { threatDist = td; ex = a.DR; ey = a.UR; }
+-            }
++            // 射程外：朝目标单调逼近，停在自身转化射程边缘(11格)后持续转化，绝不继续靠近(不进敌堆)。
++            // 旧"垂直绕行"已删除，原因：它是纯横向移动，到目标距离变为 √(d²+100)——**只增不减**，
++            // 于是祭司永远进不了 12 格转化射程(表现为"不转化")，且绕行侧随最近威胁翻面而左右
++            // 横跳(表现为"来回走")。安全性已改由上方目标选择(敌堆>=3 过滤 + 34 格距离上限)把关。
++            // 11 格 = 祭司够得着转化(12格)、投石车够不着祭司(10格)的黄金区间。
+             double dx = tdr - priest->DR, dy = tur - priest->UR;
+             double dl = std::sqrt(dx * dx + dy * dy);
+             if (dl < 1) { dx = 1; dy = 0; dl = 1; }
+-            if (threatDist < 10 * BLOCK && threatDist < d) {
+-                // 威胁敌人挡在祭司与目标之间 → 垂直绕行，选离威胁敌人更远的一侧
+-                double px = -dy / dl, py = dx / dl;
+-                double s1x = priest->DR + px * 10 * BLOCK, s1y = priest->UR + py * 10 * BLOCK;
+-                double s2x = priest->DR - px * 10 * BLOCK, s2y = priest->UR - py * 10 * BLOCK;
+-                double s1 = calDistance(s1x, s1y, ex, ey), s2 = calDistance(s2x, s2y, ex, ey);
+-                double wx = (s1 >= s2 ? s1x : s2x), wy = (s1 >= s2 ? s1y : s2y);
+-                wx = fmax(BLOCK, fmin(wx, (MAP_L - 1) * BLOCK));
+-                wy = fmax(BLOCK, fmin(wy, (MAP_U - 1) * BLOCK));
+-                issueMove(PRIEST_MOVE_FOLLOW, wx, wy, BLOCK);
+-            } else {
+-                // 无威胁挡路：直线逼近目标到 11 格（转化射程 12 仍覆盖）。
+-                // 不能逼近到 10 格：那正是投石车射程（10格），祭司会在投石车火力内被 50 攻击两发秒杀。
+-                // 11 格 = 祭司够得着转化、投石车够不着祭司的黄金区间。
+-                double k = (d - 11 * BLOCK) / d;
+-                issueMove(PRIEST_MOVE_FOLLOW, priest->DR + dx * k, priest->UR + dy * k, 2 * BLOCK);
+-            }
++            double k = (d - 11 * BLOCK) / d;
++            double gx = fmax(BLOCK, fmin(priest->DR + dx * k, (MAP_L - 1) * BLOCK));
++            double gy = fmax(BLOCK, fmin(priest->UR + dy * k, (MAP_U - 1) * BLOCK));
++            issueMove(PRIEST_MOVE_FOLLOW, gx, gy, 2 * BLOCK);
+             return;
+         }
+         if (!offense) {
+@@ -716,14 +716,16 @@
+                     double ax = armyDR, ay = armyUR;
+                     double ex = 0, ey = 0; double ndAnchor = 1e18;
+                     int ne = nearestEnemyUnitSN(info, armyDR, armyUR, ndAnchor);
++                    // 后退距离由 9 格收到 5 格：之前推太远，敌人出现时祭司离目标 d 过大，
++                    // 更难进入 12 格转化射程（也是"总攻不转化"的诱因之一）。5 格仍能避开火线。
+                     if (ne >= 0 && enemyDetailPos(info, ne, ex, ey)) {
+                         double rx = armyDR - ex, ry = armyUR - ey;   // 由敌指向军队 = 背敌方向
+                         double rl = std::sqrt(rx * rx + ry * ry);
+-                        if (rl > 1) { ax = armyDR + rx / rl * 9 * BLOCK; ay = armyUR + ry / rl * 9 * BLOCK; }
++                        if (rl > 1) { ax = armyDR + rx / rl * 5 * BLOCK; ay = armyUR + ry / rl * 5 * BLOCK; }
+                     } else {
+                         double vx = armyDR - siegeDR, vy = armyUR - siegeUR; // 厂区→军队方向(我方推进方向)
+                         double vl = std::sqrt(vx * vx + vy * vy);
+-                        if (vl > 1) { ax = armyDR + vx / vl * 9 * BLOCK; ay = armyUR + vy / vl * 9 * BLOCK; }
++                        if (vl > 1) { ax = armyDR + vx / vl * 5 * BLOCK; ay = armyUR + vy / vl * 5 * BLOCK; }
+                     }
+                     ax = fmax(BLOCK, fmin(ax, (MAP_L - 1) * BLOCK));
+                     ay = fmax(BLOCK, fmin(ay, (MAP_U - 1) * BLOCK));
+@@ -2134,6 +2136,24 @@
+             if (enemy >= 0 && enemy == g_priestConvertTargetSN) enemy = -1;
+             bool ranged = isRangedUnit(a.Sort);
+ 
++            // 远程兵：保持自身攻击距离 —— 最近敌 <8 格(贴脸)先 kite 到 12 格再射，
++            // 绝不站在敌堆里原地对射（用户要求：就近打 + 各自保持自身攻击距离 + 不进敌堆）。
++            if (ranged) {
++                double kx = 0, ky = 0; double ndK = 1e18;
++                int nk = nearestEnemySN(info, a.DR, a.UR, ndK);
++                if (nk >= 0 && enemyDetailPos(info, nk, kx, ky) && ndK < 8 * BLOCK) {
++                    double rx = a.DR - kx, ry = a.UR - ky;   // 背敌方向
++                    double rl = std::sqrt(rx * rx + ry * ry);
++                    double sx = a.DR, sy = a.UR;
++                    if (rl > 1) { sx = a.DR + rx / rl * 12 * BLOCK; sy = a.UR + ry / rl * 12 * BLOCK; }
++                    sx = fmax(BLOCK, fmin(sx, (MAP_L - 1) * BLOCK));
++                    sy = fmax(BLOCK, fmin(sy, (MAP_U - 1) * BLOCK));
++                    auto sp = scatterPoint(a.SN, sx, sy);
++                    moveArmyTo(a.SN, sp.first, sp.second);
++                    continue;   // 本帧先拉开距离，不攻击
++                }
++            }
++
+             if (enemy >= 0) {
+                 // 远程兵：贴边消耗（射程优势白打）；近战兵：只在清场后或敌人在身边才反击，不贸然冲进集火圈
+                 if (ranged || cleared) {
+@@ -2148,22 +2168,16 @@
+                 // 远程兵无敌人时向厂区推进；近战兵未清场时推进到厂区外 18 格集结（不深入集火圈）
+                 if (hasTarget) {
+                     if (ranged) {
+-                        // 远程兵 standoff：与最近敌保持 12 格、不冲进白刃线（近战前排吸收仇恨），
+-                        // 无近敌时才推进到厂区外 12 格——始终在己方近战之后，避免被敌追兵缠上/误伤。
+-                        double ex = 0, ey = 0; double ndR = 1e18;
+-                        int neR = nearestEnemySN(info, a.DR, a.UR, ndR);
+-                        if (neR >= 0 && enemyDetailPos(info, neR, ex, ey) && ndR < 14 * BLOCK) {
+-                            double rx = a.DR - ex, ry = a.UR - ey;   // 背敌方向
+-                            double rl = std::sqrt(rx * rx + ry * ry);
+-                            double sx = a.DR, sy = a.UR;
+-                            if (rl > 1) { sx = a.DR + rx / rl * 12 * BLOCK; sy = a.UR + ry / rl * 12 * BLOCK; }
+-                            sx = fmax(BLOCK, fmin(sx, (MAP_L - 1) * BLOCK));
+-                            sy = fmax(BLOCK, fmin(sy, (MAP_U - 1) * BLOCK));
+-                            auto sp = scatterPoint(a.SN, sx, sy);
+-                            moveArmyTo(a.SN, sp.first, sp.second);
+-                        } else if (calDistance(a.DR, a.UR, targetDR, targetUR) > 12 * BLOCK) {
+-                            // 散开站位：目标点按 SN 偏移，防全部挤在厂区一点被投石车群伤
+-                            auto sp = scatterPoint(a.SN, targetDR, targetUR);
++                        // 远程兵安全线：停在厂区外 20 格——在近战(15~18格)集结位**之后**，
++                        // 形成"近战前排 / 远程后排"的分批，绝不推进到厂区=敌堆。
++                        // 18~22 格区间内原地待命（保持自身攻击距离），不来回蹭。
++                        double dx = a.DR - targetDR, dy = a.UR - targetUR;
++                        double dist = std::sqrt(dx * dx + dy * dy);
++                        if (dist < 1) { dx = 1; dy = 0; dist = 1; }
++                        if (dist < 18 * BLOCK || dist > 22 * BLOCK) {
++                            auto sp = scatterPoint(a.SN,
++                                targetDR + dx / dist * 20 * BLOCK,
++                                targetUR + dy / dist * 20 * BLOCK);
+                             moveArmyTo(a.SN, sp.first, sp.second);
+                         }
+                     } else {

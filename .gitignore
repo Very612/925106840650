@@ -1,0 +1,63 @@
+*.orig
+*.user*
+
+# Qt相关临时文件
+Makefile*
+*.o
+*.obj
+*.exe
+moc_*
+ui_*.h
+qrc_*.cpp
+*.autosave
+object_script.*
+*.qmake.stash
+*.pro.user*
+# 构建目录
+debug/
+release/
+build/
+
+# 日志文件
+*.log
+
+# CursorAI相关文件
+.cursor
+
+# VS Code相关文件
+.vscode/
+
+# JetBrains IDE相关文件
+.idea/
+
+# 系统相关文件
+.DS_Store
+Thumbs.db
+
+# 临时文件
+*.bak
+*.bak*
+*.tmp
+*.temp
+*~
+output/
+
+# 静态图片文件
+res/
+res.rcc
+
+# 本地生成的架构文档
+docs/architecture/
+
+# 调试产物（加速跑局输出 / trace / 状态标记）
+run_*.txt
+result_*.txt
+*_status.txt
+trace_*.txt
+priest_trace*.txt
+tower_debug.txt
+*.exit
+
+# 第三方库编译产物
+library/fixed_point/benchmark_linux
+library/fixed_point/build_log.txt
