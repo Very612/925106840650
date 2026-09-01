@@ -286,8 +286,7 @@ int UsrAI::findWoundedAllySN(const tagInfo& info, int priestSN)
         double ratio = double(blood) / double(maxblood);
         if (ratio < br) { br = ratio; best = sn; }
     };
-    for (const auto& a : info.armies)
-        if (a.SN != priestSN) consider(a.SN, a.Blood, a.MaxBlood);
+    for (const auto& a : info.armies)  consider(a.SN, a.Blood, a.MaxBlood);
     for (const auto& f : info.farmers) consider(f.SN, f.Blood, f.MaxBlood);
     return best;
 }
